@@ -43,6 +43,26 @@
 #include <limits.h>
 #include <stdio.h>
 
+#define VYBE_DEBUG
+#ifdef VYBE_DEBUG
+
+void DEBUGG(
+    const char *s) {
+
+    FILE *fp;
+    fp = fopen("/tmp/flecs_debug.txt", "a+");
+    fprintf(fp, "message: %s\n", s);
+    fclose(fp);
+}
+
+char VYBE_str[1024];
+
+#define DDD(...)\
+    sprintf(VYBE_str, __VA_ARGS__);\
+    DEBUGG(VYBE_str)
+
+#endif
+
 /**
  * @file datastructures/entity_index.h
  * @brief Entity index data structure.
