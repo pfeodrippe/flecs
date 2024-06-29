@@ -1,4 +1,3 @@
-
 /* A friendly warning from bake.test
  * ----------------------------------------------------------------------------
  * This file is generated. To add/remove testcases modify the 'project.json' of
@@ -1411,6 +1410,7 @@ void Observer_notify_after_defer_batched(void);
 void Observer_notify_after_defer_batched_2_entities_in_table(void);
 void Observer_notify_after_defer_batched_2_entities_in_table_w_tgt(void);
 void Observer_multi_observer_table_fill_w_singleton(void);
+void Observer_multi_observer_table_fill_w_singleton_2(void);
 void Observer_wildcard_propagate_w_other_table(void);
 void Observer_add_in_yield_existing(void);
 void Observer_add_in_yield_existing_multi(void);
@@ -7517,6 +7517,10 @@ bake_test_case Observer_testcases[] = {
     {
         "multi_observer_table_fill_w_singleton",
         Observer_multi_observer_table_fill_w_singleton
+    },
+    {
+        "multi_observer_table_fill_w_singleton_2",
+        Observer_multi_observer_table_fill_w_singleton_2
     },
     {
         "wildcard_propagate_w_other_table",
