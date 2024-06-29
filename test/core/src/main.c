@@ -1,4 +1,3 @@
-
 /* A friendly warning from bake.test
  * ----------------------------------------------------------------------------
  * This file is generated. To add/remove testcases modify the 'project.json' of
