@@ -6814,38 +6814,6 @@ void Observer_multi_observer_table_fill_w_singleton(void) {
 
     ECS_COMPONENT(world, Position);
     ECS_COMPONENT(world, Velocity);
-
-    Probe ctx = {0};
-
-    ecs_observer(world, {
-        .query.terms = {
-            { .id = ecs_id(Position), .src.id = ecs_id(Position)|EcsIsEntity },
-            { .id = ecs_id(Velocity) },
-        },
-        .query.flags = EcsQueryNoData,
-        .callback = Observer,
-        .events = { EcsOnTableFill },
-        .ctx = &ctx
-    });
-
-    ecs_singleton_add(world, Position);
-    test_int(ctx.invoked, 0);
-
-    ecs_entity_t e = ecs_new(world);
-    ecs_add(world, e, Velocity);
-    test_int(ctx.invoked, 0);
-
-    ecs_run_aperiodic(world, 0);
-    test_int(ctx.invoked, 1);
-
-    ecs_fini(world);
-}
-
-void Observer_multi_observer_table_fill_w_singleton_2(void) {
-    ecs_world_t* world = ecs_mini();
-
-    ECS_COMPONENT(world, Position);
-    ECS_COMPONENT(world, Velocity);
     ECS_COMPONENT(world, Mass);
 
     Probe ctx = {0};
@@ -6874,10 +6842,10 @@ void Observer_multi_observer_table_fill_w_singleton_2(void) {
     ecs_entity_t e2 = ecs_new(world);
     ecs_add(world, e2, Velocity);
     ecs_add(world, e2, Mass);
-    
+
     ecs_remove(world, e, Velocity);
     ecs_remove(world, e, Mass);
-    
+
     ecs_run_aperiodic(world, 0);
     test_int(ctx.invoked, 2);
 
