@@ -6820,10 +6820,10 @@ void Observer_multi_observer_table_fill_w_singleton(void) {
 
     ecs_observer(world, {
             .query.terms = {
-                { .id = ecs_id(Position), .src.id = ecs_id(Position)|EcsIsEntity },
+                { .id = ecs_id(Position), .src.id = ecs_id(Position) },
                 { .id = ecs_id(Velocity) },
             },
-            .query.flags = EcsQueryNoData,
+            //.query.flags = EcsQueryNoData,
             .callback = Observer,
             .events = { EcsOnRemove },
             .ctx = &ctx
@@ -6842,9 +6842,10 @@ void Observer_multi_observer_table_fill_w_singleton(void) {
     ecs_entity_t e2 = ecs_new(world);
     ecs_add(world, e2, Velocity);
     ecs_add(world, e2, Mass);
-
-    ecs_remove(world, e, Velocity);
-    ecs_remove(world, e, Mass);
+    ecs_run_aperiodic(world, 0);
+    
+    ecs_delete(world, e);
+    ecs_delete(world, e2);
 
     ecs_run_aperiodic(world, 0);
     test_int(ctx.invoked, 2);
