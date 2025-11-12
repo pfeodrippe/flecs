@@ -1394,3 +1394,53 @@ void OrderedChildren_lookup_after_clear(void) {
 
     ecs_fini(world);
 }
+
+void OrderedChildren_inherited_children_w_isa(void) {
+    /* Issue #1862: OrderedChildren with IsA relationships iterate in wrong order */
+    ecs_world_t *world = ecs_mini();
+
+    ecs_entity_t type_a = ecs_new(world);
+    ecs_entity_t type_b = ecs_new(world);
+    
+    ecs_entity_t parent = ecs_new_w_id(world, EcsPrefab);
+    ecs_add_id(world, parent, EcsOrderedChildren);
+    
+    ecs_entity_t c1 = ecs_new_w_pair(world, EcsIsA, type_a);
+    ecs_add_pair(world, c1, EcsChildOf, parent);
+    
+    ecs_entity_t c2 = ecs_new_w_pair(world, EcsIsA, type_b);
+    ecs_add_pair(world, c2, EcsChildOf, parent);
+    
+    ecs_entity_t c3 = ecs_new_w_pair(world, EcsIsA, type_a);
+    ecs_add_pair(world, c3, EcsChildOf, parent);
+    
+    ecs_entity_t inst = ecs_new_w_pair(world, EcsIsA, parent);
+    
+    ecs_entity_t expected_types[3] = { type_a, type_b, type_a };
+
+    int count = 0;
+    ecs_iter_t it = ecs_children(world, inst);
+    while (ecs_children_next(&it)) {
+        for (int i = 0; i < it.count; i++) {
+            test_assert(count < 3);
+            ecs_entity_t child = it.entities[i];
+            ecs_entity_t actual_type = ecs_get_target(world, child, EcsIsA, 0);
+            test_uint(actual_type, expected_types[count]);
+            count++;
+        }
+    }
+    test_int(count, 3);
+
+    ecs_fini(world);
+}
+
+
+
+
+
+
+
+
+
+
+
