@@ -1,12 +1,15 @@
 /**
  * @file EnsureDirectWriteRace.c
- * @brief Test suite for Bug 1: ecs_ensure direct-write race.
+ * @brief Test suite for ecs_ensure direct-write race.
  *
- * Bug: When ecs_ensure is called from multiple threads on the same entity,
- * both threads can obtain raw pointers to the same component data, then
- * write concurrently without synchronization.
+ * Bug: When ecs_ensure is called from multiple threads on the same entity
+ * that already has the component, flecs_defer_get_existing returns a raw
+ * pointer to the live component data. Unlike flecs_defer_set which has a
+ * stage_count guard, ecs_ensure does NOT guard against multi-stage scenarios.
+ * Both workers receive the SAME raw pointer and write to it concurrently.
  *
- * TODO: Instrument commands.c:399-459 with FLECS_SCHED_POINT macros
+ * TLA+ spec: EnsureDirectWrite.tla
+ * Location: src/commands.c:399-459 (flecs_defer_ensure)
  */
 
 #include <concurrency.h>
@@ -23,25 +26,30 @@ typedef struct {
 static void worker_fn(int thread_id, void *data) {
     EnsureTestData *td = (EnsureTestData *)data;
     
-    /* Use per-thread stage to avoid stack allocator conflicts */
+    /* Use per-thread stage */
     ecs_world_t *stage = td->stages[thread_id];
     
-    /* Get mutable pointer to component - this is the race-prone operation */
+    /* Begin deferring - this is required for the deferred ensure path */
+    ecs_defer_begin(stage);
+    
+    /* Get mutable pointer to component - this is the race-prone operation.
+     * For entities that already have the component, this returns a raw pointer
+     * to the live data without any protection in multi-stage mode. */
     Position *p = ecs_ensure_id(stage, td->entity, td->component_id, sizeof(Position));
     
     /* Modify the component - concurrent modifications are the bug */
     p->x += (float)thread_id;
     p->y += (float)thread_id;
+    
+    /* End deferring */
+    ecs_defer_end(stage);
 }
 
 /**
  * Test: concurrent_raw_ptrs
  *
  * Forces both threads to obtain raw pointers before either writes,
- * demonstrating the race window.
- *
- * NOTE: This test is a placeholder. Full functionality requires
- * instrumenting commands.c with FLECS_SCHED_POINT macros.
+ * demonstrating the race window where both hold pointers to live data.
  */
 void EnsureDirectWriteRace_concurrent_raw_ptrs(void) {
     ecs_world_t *world = ecs_init();
@@ -49,6 +57,8 @@ void EnsureDirectWriteRace_concurrent_raw_ptrs(void) {
     
     ECS_COMPONENT(world, Position);
     
+    /* Entity must already have the component for the bug to manifest.
+     * If entity doesn't have it, ecs_ensure allocates in stage storage. */
     ecs_entity_t e = ecs_new(world);
     ecs_set(world, e, Position, {0, 0});
     
@@ -60,7 +70,6 @@ void EnsureDirectWriteRace_concurrent_raw_ptrs(void) {
     td.stages[1] = ecs_get_stage(world, 0);
     td.stages[2] = ecs_get_stage(world, 1);
     
-    /* Set up the scheduler */
     sched_init();
     
     sched_config_t config = {
@@ -68,13 +77,13 @@ void EnsureDirectWriteRace_concurrent_raw_ptrs(void) {
         .thread_fn = worker_fn,
         .thread_data = &td,
         .timeout_ms = 5000,
-        .schedule_len = 0,  /* No schedule - just run threads */
+        .schedule_len = 4,
         .schedule = {
-            /* TODO: Add schedule once commands.c is instrumented:
-             * SCHED_STEP(1, "ensure_get_ptr"),
-             * SCHED_STEP(2, "ensure_get_ptr"),
-             * SCHED_STEP(1, "ensure_write"),
-             * SCHED_STEP(2, "ensure_write"), */
+            /* Both threads get raw pointers, then both have them simultaneously */
+            SCHED_STEP(1, "ensure_get_ptr"),
+            SCHED_STEP(2, "ensure_get_ptr"),
+            SCHED_STEP(1, "ensure_has_ptr"),
+            SCHED_STEP(2, "ensure_has_ptr"),
             SCHED_END
         }
     };
@@ -82,7 +91,6 @@ void EnsureDirectWriteRace_concurrent_raw_ptrs(void) {
     int result = sched_run(&config);
     sched_fini();
     
-    /* For now, just verify we can run the test */
     test_assert(result == 0);
     
     ecs_fini(world);
@@ -91,7 +99,7 @@ void EnsureDirectWriteRace_concurrent_raw_ptrs(void) {
 /**
  * Test: sequential_writes
  *
- * Shows that sequential access (T1 gets ptr and writes, then T2)
+ * Shows that sequential access (T1 gets ptr and finishes, then T2)
  * does not have race conditions.
  */
 void EnsureDirectWriteRace_sequential_writes(void) {
@@ -111,7 +119,6 @@ void EnsureDirectWriteRace_sequential_writes(void) {
     td.stages[1] = ecs_get_stage(world, 0);
     td.stages[2] = ecs_get_stage(world, 1);
     
-    /* Set up the scheduler */
     sched_init();
     
     sched_config_t config = {
@@ -119,9 +126,13 @@ void EnsureDirectWriteRace_sequential_writes(void) {
         .thread_fn = worker_fn,
         .thread_data = &td,
         .timeout_ms = 5000,
-        .schedule_len = 0,  /* No schedule - just run threads */
+        .schedule_len = 4,
         .schedule = {
-            /* TODO: Add schedule once commands.c is instrumented */
+            /* Sequential: T1 completes before T2 starts */
+            SCHED_STEP(1, "ensure_get_ptr"),
+            SCHED_STEP(1, "ensure_has_ptr"),
+            SCHED_STEP(2, "ensure_get_ptr"),
+            SCHED_STEP(2, "ensure_has_ptr"),
             SCHED_END
         }
     };

@@ -28,12 +28,6 @@
                 "correct_interleaving"
             ]
         }, {
-            "id": "EnsureDirectWriteRace",
-            "testcases": [
-                "concurrent_raw_ptrs",
-                "sequential_writes"
-            ]
-        }, {
             "id": "TimeSpentRace",
             "testcases": [
                 "lost_time_measurement",
@@ -56,6 +50,31 @@
             "testcases": [
                 "concurrent_sort",
                 "lost_match_count"
+            ]
+        }, {
+            "id": "EnsureDirectWriteRace",
+            "testcases": [
+                "concurrent_raw_ptrs",
+                "sequential_writes"
+            ]
+        }, {
+            "id": "OverrideWriteRace",
+            "testcases": [
+                "concurrent_override_remove",
+                "read_during_write"
+            ]
+        }, {
+            "id": "EntityIndexRace",
+            "setup": true,
+            "testcases": [
+                "duplicate_entity_allocation",
+                "max_id_race"
+            ]
+        }, {
+            "id": "MultiStageMerge",
+            "testcases": [
+                "silent_data_loss",
+                "merge_order_matters"
             ]
         }]
     }

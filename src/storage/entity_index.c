@@ -239,13 +239,21 @@ bool flecs_entity_index_exists(
 uint64_t flecs_entity_index_new_id(
     ecs_entity_index_t *index)
 {
+    FLECS_SCHED_POINT("entity_index_check_recycle");
     if (index->alive_count != ecs_vec_count(&index->dense)) {
         /* Recycle id */
-        return ecs_vec_get_t(&index->dense, uint64_t, index->alive_count ++)[0];
+        FLECS_SCHED_POINT("entity_index_recycle_read");
+        int32_t ac = index->alive_count;
+        FLECS_SCHED_POINT("entity_index_recycle_write");
+        index->alive_count = ac + 1;
+        return ecs_vec_get_t(&index->dense, uint64_t, ac)[0];
     }
 
     /* Create new id */
-    uint32_t id = (uint32_t)++ index->max_id;
+    FLECS_SCHED_POINT("entity_index_maxid_read");
+    uint32_t id = (uint32_t)(index->max_id + 1);
+    FLECS_SCHED_POINT("entity_index_maxid_write");
+    index->max_id = id;
 
     ecs_assert(index->max_id <= UINT32_MAX, ECS_INVALID_OPERATION,
         "entity id overflow after creating new entity "
@@ -262,7 +270,11 @@ uint64_t flecs_entity_index_new_id(
     ecs_entity_index_page_t *page = flecs_entity_index_ensure_page(index, id);
     ecs_assert(page != NULL, ECS_INTERNAL_ERROR, NULL);
     ecs_record_t *r = &page->records[id & FLECS_ENTITY_PAGE_MASK];
-    r->dense = index->alive_count ++;
+    FLECS_SCHED_POINT("entity_index_alive_read");
+    int32_t ac = index->alive_count;
+    FLECS_SCHED_POINT("entity_index_alive_write");
+    r->dense = ac;
+    index->alive_count = ac + 1;
     ecs_assert(index->alive_count == ecs_vec_count(&index->dense),
         ECS_INTERNAL_ERROR, NULL);
 

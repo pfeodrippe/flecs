@@ -33,6 +33,9 @@ extern "C" {
 /* Maximum length of a point name */
 #define SCHED_MAX_POINT_LEN 64
 
+/* Maximum number of sync points (points where threads block) */
+#define SCHED_MAX_SYNC_POINTS 64
+
 /**
  * A step in the schedule: release thread `thread_id` when it reaches `point`.
  */
@@ -71,6 +74,10 @@ typedef struct sched_state_t {
     bool thread_proceed[SCHED_MAX_THREADS]; /* Permission to proceed */
     bool thread_done[SCHED_MAX_THREADS];    /* Thread finished */
     int num_threads;
+    
+    /* Sync points: threads only block at points in this set */
+    char sync_points[SCHED_MAX_SYNC_POINTS][SCHED_MAX_POINT_LEN];
+    int num_sync_points;
     
     bool enabled;                         /* Is scheduling active? */
     bool failed;                          /* Did scheduling fail (timeout)? */

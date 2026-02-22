@@ -1,12 +1,15 @@
 /**
  * @file OrderBySortRace.c
- * @brief Test suite for Bug 6: order_by sorting race.
+ * @brief Test suite for flecs_query_cache_sort_tables concurrent execution race.
  *
- * Bug: When multiple threads trigger re-sorting of query results via
- * order_by, concurrent access to the sorting data structures can cause
- * corruption or lost match counts.
+ * Bug: When a cached query has an order_by callback configured, multiple workers
+ * calling ecs_query_iter() concurrently can cause:
+ *   - Concurrent sorting of the same table (data corruption)
+ *   - Lost increments to cache->match_count (non-atomic ++)
+ *   - Concurrent writes to cache->table_slices
  *
- * TODO: Instrument order_by.c:228-316 with FLECS_SCHED_POINT macros
+ * TLA+ spec: OrderBySortRace.tla
+ * Location: src/query/cache/order_by.c:228-316
  */
 
 #include <concurrency.h>
@@ -15,11 +18,11 @@
 typedef struct {
     ecs_world_t *world;
     ecs_world_t *stages[3];  /* Per-thread stages (index 1 and 2 used) */
-    ecs_query_t *queries[3];  /* Per-thread queries (index 1 and 2 used) */
-} OrderByTestData;
+    ecs_query_t *query;
+} OrderBySortTestData;
 
-/* Comparison function for order_by */
-static int compare_position(ecs_entity_t e1, const void *p1,
+/* Compare function for order_by */
+static int compare_position(ecs_entity_t e1, const void *p1, 
                             ecs_entity_t e2, const void *p2)
 {
     (void)e1; (void)e2;
@@ -28,29 +31,26 @@ static int compare_position(ecs_entity_t e1, const void *p1,
     return (pos1->x > pos2->x) - (pos1->x < pos2->x);
 }
 
-/* Thread function that iterates a sorted query */
+/* Thread function that iterates the query with order_by.
+ * This triggers flecs_query_cache_sort_tables. */
 static void worker_fn(int thread_id, void *data) {
-    OrderByTestData *td = (OrderByTestData *)data;
+    OrderBySortTestData *td = (OrderBySortTestData *)data;
     
-    /* Use per-thread stage and query */
+    /* Use per-thread stage to avoid stack allocator conflicts */
     ecs_world_t *stage = td->stages[thread_id];
-    ecs_query_t *q = td->queries[thread_id];
     
-    /* Iterate the sorted query - this can trigger re-sorting */
-    ecs_iter_t it = ecs_query_iter(stage, q);
+    /* Iterate the query - triggers sorting for order_by queries */
+    ecs_iter_t it = ecs_query_iter(stage, td->query);
     while (ecs_query_next(&it)) {
-        Position *p = ecs_field(&it, Position, 0);
-        (void)p;
+        /* Just iterate, sorting happens in query_iter */
     }
 }
 
 /**
  * Test: concurrent_sort
  *
- * Forces both threads to trigger sorting simultaneously.
- *
- * NOTE: This test is a placeholder. Full functionality requires
- * instrumenting order_by.c.
+ * Forces concurrent execution of sorting logic by having both threads
+ * enter the sort phase simultaneously.
  */
 void OrderBySortRace_concurrent_sort(void) {
     ecs_world_t *world = ecs_init();
@@ -58,40 +58,50 @@ void OrderBySortRace_concurrent_sort(void) {
     
     ECS_COMPONENT(world, Position);
     
-    /* Create entities with varying positions */
-    for (int i = 0; i < 100; i++) {
+    /* Create entities with positions in reverse order */
+    for (int i = 10; i >= 0; i--) {
         ecs_entity_t e = ecs_new(world);
-        ecs_set(world, e, Position, {(float)(100 - i), (float)i});
+        ecs_set(world, e, Position, {(float)i, (float)i});
     }
     
-    OrderByTestData td = { .world = world };
+    /* Create a cached query with order_by */
+    ecs_query_t *q = ecs_query(world, {
+        .expr = "[out] Position",
+        .cache_kind = EcsQueryCacheAuto,
+        .order_by = ecs_id(Position),
+        .order_by_callback = compare_position
+    });
+    test_assert(q != NULL);
+    
+    /* Initialize monitors by iterating once */
+    ecs_iter_t init_it = ecs_query_iter(world, q);
+    while (ecs_query_next(&init_it)) {}
+    
+    /* Add a new entity to trigger re-sort on next iteration.
+     * This makes the table dirty (new row added). */
+    ecs_entity_t new_e = ecs_new(world);
+    ecs_set(world, new_e, Position, {50.0f, 50.0f});
+    
+    OrderBySortTestData td = { .world = world, .query = q };
     td.stages[1] = ecs_get_stage(world, 0);
     td.stages[2] = ecs_get_stage(world, 1);
     
-    /* Create per-thread queries in the main thread (thread-safe) */
-    td.queries[1] = ecs_query(world, {
-        .terms = {{.id = ecs_id(Position)}},
-        .order_by = ecs_id(Position),
-        .order_by_callback = compare_position,
-        .cache_kind = EcsQueryCacheAuto
-    });
-    td.queries[2] = ecs_query(world, {
-        .terms = {{.id = ecs_id(Position)}},
-        .order_by = ecs_id(Position),
-        .order_by_callback = compare_position,
-        .cache_kind = EcsQueryCacheAuto
-    });
-    
     sched_init();
     
+    /* Schedule: both threads hit monitor_alloc_check twice (one per term check),
+     * then both hit sort_table concurrently for the race. */
     sched_config_t config = {
         .num_threads = 2,
         .thread_fn = worker_fn,
         .thread_data = &td,
         .timeout_ms = 5000,
-        .schedule_len = 0,  /* No schedule yet */
+        .schedule_len = 4,
         .schedule = {
-            /* TODO: Add schedule once order_by.c is instrumented */
+            /* Both threads sort the same table concurrently */
+            SCHED_STEP(1, "sort_table"),
+            SCHED_STEP(2, "sort_table"),
+            SCHED_STEP(1, "sort_match_count_read"),
+            SCHED_STEP(2, "sort_match_count_read"),
             SCHED_END
         }
     };
@@ -101,15 +111,15 @@ void OrderBySortRace_concurrent_sort(void) {
     
     test_assert(result == 0);
     
-    ecs_query_fini(td.queries[1]);
-    ecs_query_fini(td.queries[2]);
+    ecs_query_fini(q);
     ecs_fini(world);
 }
 
 /**
  * Test: lost_match_count
  *
- * Forces interleaving that causes match count to be incorrect.
+ * Forces the interleaving where both threads read match_count before
+ * either writes, causing one increment to be lost.
  */
 void OrderBySortRace_lost_match_count(void) {
     ecs_world_t *world = ecs_init();
@@ -117,38 +127,48 @@ void OrderBySortRace_lost_match_count(void) {
     
     ECS_COMPONENT(world, Position);
     
-    for (int i = 0; i < 100; i++) {
+    for (int i = 10; i >= 0; i--) {
         ecs_entity_t e = ecs_new(world);
-        ecs_set(world, e, Position, {(float)(100 - i), (float)i});
+        ecs_set(world, e, Position, {(float)i, (float)i});
     }
     
-    OrderByTestData td = { .world = world };
+    ecs_query_t *q = ecs_query(world, {
+        .expr = "[out] Position",
+        .cache_kind = EcsQueryCacheAuto,
+        .order_by = ecs_id(Position),
+        .order_by_callback = compare_position
+    });
+    test_assert(q != NULL);
+    
+    /* Initialize monitors by iterating once */
+    ecs_iter_t init_it = ecs_query_iter(world, q);
+    while (ecs_query_next(&init_it)) {}
+    
+    /* Add a new entity to trigger re-sort on next iteration */
+    ecs_entity_t new_e = ecs_new(world);
+    ecs_set(world, new_e, Position, {50.0f, 50.0f});
+    
+    OrderBySortTestData td = { .world = world, .query = q };
     td.stages[1] = ecs_get_stage(world, 0);
     td.stages[2] = ecs_get_stage(world, 1);
     
-    /* Create per-thread queries in the main thread (thread-safe) */
-    td.queries[1] = ecs_query(world, {
-        .terms = {{.id = ecs_id(Position)}},
-        .order_by = ecs_id(Position),
-        .order_by_callback = compare_position,
-        .cache_kind = EcsQueryCacheAuto
-    });
-    td.queries[2] = ecs_query(world, {
-        .terms = {{.id = ecs_id(Position)}},
-        .order_by = ecs_id(Position),
-        .order_by_callback = compare_position,
-        .cache_kind = EcsQueryCacheAuto
-    });
-    
     sched_init();
     
+    /* Classic lost-update race: T1 reads, T2 reads, T1 writes, T2 writes.
+     * Both read the same value, both compute same+1, T2's write overwrites T1's. */
     sched_config_t config = {
         .num_threads = 2,
         .thread_fn = worker_fn,
         .thread_data = &td,
         .timeout_ms = 5000,
-        .schedule_len = 0,
-        .schedule = { SCHED_END }
+        .schedule_len = 4,
+        .schedule = {
+            SCHED_STEP(1, "sort_match_count_read"),
+            SCHED_STEP(2, "sort_match_count_read"),
+            SCHED_STEP(1, "sort_match_count_write"),
+            SCHED_STEP(2, "sort_match_count_write"),
+            SCHED_END
+        }
     };
     
     int result = sched_run(&config);
@@ -156,7 +176,6 @@ void OrderBySortRace_lost_match_count(void) {
     
     test_assert(result == 0);
     
-    ecs_query_fini(td.queries[1]);
-    ecs_query_fini(td.queries[2]);
+    ecs_query_fini(q);
     ecs_fini(world);
 }

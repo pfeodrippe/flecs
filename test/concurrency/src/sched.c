@@ -30,6 +30,25 @@ static int64_t get_time_ms(void) {
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* Check if a point is in the sync point set */
+static bool is_sync_point(const char *point) {
+    for (int i = 0; i < g_sched.num_sync_points; i++) {
+        if (strcmp(g_sched.sync_points[i], point) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Add a point to the sync point set (if not already present) */
+static void add_sync_point(const char *point) {
+    if (is_sync_point(point)) return;
+    if (g_sched.num_sync_points >= SCHED_MAX_SYNC_POINTS) return;
+    strncpy(g_sched.sync_points[g_sched.num_sync_points], point, SCHED_MAX_POINT_LEN - 1);
+    g_sched.sync_points[g_sched.num_sync_points][SCHED_MAX_POINT_LEN - 1] = '\0';
+    g_sched.num_sync_points++;
+}
+
 /* Thread wrapper function */
 static void *thread_wrapper(void *arg) {
     thread_wrapper_data_t *wrap = (thread_wrapper_data_t *)arg;
@@ -88,6 +107,14 @@ int sched_run(sched_config_t *config) {
     g_sched.enabled = true;
     g_sched.failed = false;
     g_sched.fail_reason[0] = '\0';
+    g_sched.num_sync_points = 0;
+    
+    /* Build the sync point set from the schedule.
+     * Threads will only block at points in this set. */
+    for (int i = 0; i < config->schedule_len; i++) {
+        if (config->schedule[i].thread_id == 0) break;
+        add_sync_point(config->schedule[i].point);
+    }
     
     for (int i = 1; i <= config->num_threads; i++) {
         g_sched.thread_point[i][0] = '\0';
@@ -221,6 +248,11 @@ void sched_point(const char *point) {
     int tid = tl_sched_thread_id;
     if (tid == 0 || !g_sched.enabled) {
         return; /* Not a scheduled thread or scheduling disabled */
+    }
+    
+    /* AUTO-RELEASE: If this point is not in the schedule, pass through */
+    if (!is_sync_point(point)) {
+        return;
     }
     
     pthread_mutex_lock(&g_sched.mutex);
