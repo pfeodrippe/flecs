@@ -91,6 +91,11 @@ void DirtyStateRace_lost_increment(void) {
     };
     
     int result = sched_run(&config);
+    
+    /* Verify the trace matches the TLA+ spec interleaving:
+     * T1 reads → T2 reads → T1 writes → T2 writes (overwrites T1's increment) */
+    test_assert(sched_verify_trace(config.schedule, 4));
+    
     sched_fini();
     
     /* The test passes if we could reproduce the interleaving. */

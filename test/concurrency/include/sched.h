@@ -36,6 +36,17 @@ extern "C" {
 /* Maximum number of sync points (points where threads block) */
 #define SCHED_MAX_SYNC_POINTS 64
 
+/* Maximum trace entries to record */
+#define SCHED_MAX_TRACE 256
+
+/**
+ * A trace entry: records thread reaching a point.
+ */
+typedef struct sched_trace_entry_t {
+    int thread_id;
+    char point[SCHED_MAX_POINT_LEN];
+} sched_trace_entry_t;
+
 /**
  * A step in the schedule: release thread `thread_id` when it reaches `point`.
  */
@@ -79,6 +90,10 @@ typedef struct sched_state_t {
     char sync_points[SCHED_MAX_SYNC_POINTS][SCHED_MAX_POINT_LEN];
     int num_sync_points;
     
+    /* Trace: records actual execution order */
+    sched_trace_entry_t trace[SCHED_MAX_TRACE];
+    int trace_len;
+    
     bool enabled;                         /* Is scheduling active? */
     bool failed;                          /* Did scheduling fail (timeout)? */
     char fail_reason[256];
@@ -115,6 +130,23 @@ int sched_run(sched_config_t *config);
  * @param point Name of this barrier point.
  */
 void sched_point(const char *point);
+
+/**
+ * Get the recorded trace of execution.
+ * Returns pointer to trace array; sets *len to number of entries.
+ */
+const sched_trace_entry_t* sched_get_trace(int *len);
+
+/**
+ * Print the recorded trace (for debugging).
+ */
+void sched_print_trace(void);
+
+/**
+ * Verify trace matches expected schedule.
+ * Returns true if the trace follows the expected interleaving.
+ */
+bool sched_verify_trace(const sched_step_t *expected, int expected_len);
 
 /**
  * Get the current thread's ID (1-indexed).

@@ -108,6 +108,7 @@ int sched_run(sched_config_t *config) {
     g_sched.failed = false;
     g_sched.fail_reason[0] = '\0';
     g_sched.num_sync_points = 0;
+    g_sched.trace_len = 0;  /* Reset trace */
     
     /* Build the sync point set from the schedule.
      * Threads will only block at points in this set. */
@@ -257,6 +258,14 @@ void sched_point(const char *point) {
     
     pthread_mutex_lock(&g_sched.mutex);
     
+    /* Record trace entry */
+    if (g_sched.trace_len < SCHED_MAX_TRACE) {
+        g_sched.trace[g_sched.trace_len].thread_id = tid;
+        strncpy(g_sched.trace[g_sched.trace_len].point, point, SCHED_MAX_POINT_LEN - 1);
+        g_sched.trace[g_sched.trace_len].point[SCHED_MAX_POINT_LEN - 1] = '\0';
+        g_sched.trace_len++;
+    }
+    
     /* Record that we've arrived at this point */
     strncpy(g_sched.thread_point[tid], point, SCHED_MAX_POINT_LEN - 1);
     g_sched.thread_point[tid][SCHED_MAX_POINT_LEN - 1] = '\0';
@@ -280,4 +289,45 @@ void sched_point(const char *point) {
 __attribute__((visibility("default")))
 void flecs_sched_point(const char *point) {
     sched_point(point);
+}
+
+/* Get the recorded trace */
+const sched_trace_entry_t* sched_get_trace(int *len) {
+    if (len) *len = g_sched.trace_len;
+    return g_sched.trace;
+}
+
+/* Print the recorded trace */
+void sched_print_trace(void) {
+    printf("Execution trace (%d entries):\n", g_sched.trace_len);
+    for (int i = 0; i < g_sched.trace_len; i++) {
+        printf("  [%d] T%d @ %s\n", i, 
+            g_sched.trace[i].thread_id,
+            g_sched.trace[i].point);
+    }
+}
+
+/* Verify trace matches expected schedule */
+bool sched_verify_trace(const sched_step_t *expected, int expected_len) {
+    if (g_sched.trace_len < expected_len) {
+        fprintf(stderr, "Trace too short: got %d, expected %d\n",
+            g_sched.trace_len, expected_len);
+        return false;
+    }
+    
+    for (int i = 0; i < expected_len; i++) {
+        if (expected[i].thread_id == 0) break; /* End marker */
+        
+        if (g_sched.trace[i].thread_id != expected[i].thread_id ||
+            strcmp(g_sched.trace[i].point, expected[i].point) != 0) {
+            fprintf(stderr, "Trace mismatch at step %d:\n", i);
+            fprintf(stderr, "  Expected: T%d @ %s\n", 
+                expected[i].thread_id, expected[i].point);
+            fprintf(stderr, "  Got:      T%d @ %s\n",
+                g_sched.trace[i].thread_id, g_sched.trace[i].point);
+            return false;
+        }
+    }
+    
+    return true;
 }

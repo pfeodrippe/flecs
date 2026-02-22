@@ -90,6 +90,9 @@ void EvalCountRace_lost_eval_count(void) {
     
     test_assert(result == 0);
     
+    /* Bug: eval_count should be 2, but due to race it's 1 (lost increment) */
+    test_int(q->eval_count, 1);
+    
     ecs_query_fini(q);
     ecs_fini(world);
 }
@@ -147,6 +150,9 @@ void EvalCountRace_correct_interleaving(void) {
     sched_fini();
     
     test_assert(result == 0);
+    
+    /* Sequential: eval_count should be 2 (no lost increment) */
+    test_int(q->eval_count, 2);
     
     ecs_query_fini(q);
     ecs_fini(world);
