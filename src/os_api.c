@@ -645,3 +645,14 @@ const char* ecs_os_strerror(int err) {
     return strerror(err);
 #   endif
 }
+
+#ifdef FLECS_SCHED_TESTING
+/* Weak stub for controlled concurrency testing.
+ * When test framework is linked, it overrides this with actual implementation. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((weak))
+#endif
+void flecs_sched_point(const char *point) {
+    (void)point;
+}
+#endif

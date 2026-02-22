@@ -21,6 +21,18 @@
  * @{
  */
 
+/* Controlled concurrency testing support.
+ * When FLECS_SCHED_TESTING is defined, SCHED_POINT macros become barriers
+ * that allow deterministic thread interleaving for race condition testing.
+ * In production builds (without FLECS_SCHED_TESTING), these are no-ops. */
+#ifdef FLECS_SCHED_TESTING
+    /* Declaration of external scheduler function (implemented in test framework) */
+    FLECS_API void flecs_sched_point(const char *point);
+    #define FLECS_SCHED_POINT(name) flecs_sched_point(name)
+#else
+    #define FLECS_SCHED_POINT(name) ((void)0)
+#endif
+
 #if defined(ECS_TARGET_WINDOWS)
 #include <malloc.h>
 #elif defined(ECS_TARGET_FREEBSD)

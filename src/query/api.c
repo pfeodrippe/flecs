@@ -489,7 +489,10 @@ bool ecs_query_has_table(
 
     if (!flecs_table_bloom_filter_test(table, q->bloom_filter)) {
         /* Safe, only used for statistics */
-        ECS_CONST_CAST(ecs_query_t*, q)->eval_count ++;
+        FLECS_SCHED_POINT("eval_count_read");
+        int64_t old_count = ECS_CONST_CAST(ecs_query_t*, q)->eval_count;
+        FLECS_SCHED_POINT("eval_count_write");
+        ECS_CONST_CAST(ecs_query_t*, q)->eval_count = old_count + 1;
         return false;
     }
 
@@ -519,7 +522,10 @@ bool ecs_query_has_range(
 
     if (!flecs_table_bloom_filter_test(table, q->bloom_filter)) {
         /* Safe, only used for statistics */
-        ECS_CONST_CAST(ecs_query_t*, q)->eval_count ++;
+        FLECS_SCHED_POINT("eval_count_read");
+        int64_t old_count = ECS_CONST_CAST(ecs_query_t*, q)->eval_count;
+        FLECS_SCHED_POINT("eval_count_write");
+        ECS_CONST_CAST(ecs_query_t*, q)->eval_count = old_count + 1;
         return false;
     }
 

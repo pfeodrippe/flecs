@@ -1,0 +1,62 @@
+{
+    "id": "concurrency",
+    "type": "application",
+    "value": {
+        "author": "Flecs Contributors",
+        "description": "Concurrency race reproduction tests",
+        "public": false,
+        "coverage": false,
+        "use": [
+            "flecs"
+        ]
+    },
+    "lang.c": {
+        "defines": [
+            "FLECS_SCHED_TESTING"
+        ]
+    },
+    "test": {
+        "testsuites": [{
+            "id": "MonitorAllocRace",
+            "testcases": [
+                "double_alloc_leak"
+            ]
+        }, {
+            "id": "DirtyStateRace",
+            "testcases": [
+                "lost_increment",
+                "correct_interleaving"
+            ]
+        }, {
+            "id": "EnsureDirectWriteRace",
+            "testcases": [
+                "concurrent_raw_ptrs",
+                "sequential_writes"
+            ]
+        }, {
+            "id": "TimeSpentRace",
+            "testcases": [
+                "lost_time_measurement",
+                "correct_interleaving"
+            ]
+        }, {
+            "id": "EvalCountRace",
+            "testcases": [
+                "lost_eval_count",
+                "correct_interleaving"
+            ]
+        }, {
+            "id": "MonitorSyncRace",
+            "testcases": [
+                "concurrent_writes",
+                "stale_monitor_value"
+            ]
+        }, {
+            "id": "OrderBySortRace",
+            "testcases": [
+                "concurrent_sort",
+                "lost_match_count"
+            ]
+        }]
+    }
+}

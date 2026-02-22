@@ -143,7 +143,11 @@ ecs_entity_t flecs_run_system(
     flecs_stage_set_system(stage, old_system);
 
     if (measure_time) {
-        system_data->time_spent += (ecs_ftime_t)ecs_time_measure(&time_start);
+        FLECS_SCHED_POINT("time_spent_read");
+        ecs_ftime_t old_time = system_data->time_spent;
+        ecs_ftime_t delta = (ecs_ftime_t)ecs_time_measure(&time_start);
+        FLECS_SCHED_POINT("time_spent_write");
+        system_data->time_spent = old_time + delta;
     }
 
     ecs_os_perf_trace_pop(system_data->name);

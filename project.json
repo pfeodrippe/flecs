@@ -34,6 +34,9 @@
         },
         "${cfg sanitize}": {
             "defines": ["FLECS_SANITIZE"]
+        },
+        "${cfg debug}": {
+            "defines": ["FLECS_SCHED_TESTING"]
         }
     }
 }

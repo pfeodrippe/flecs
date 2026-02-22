@@ -45,10 +45,12 @@ bool flecs_query_get_match_monitor(
     ecs_assert(!is_trivial, ECS_INVALID_OPERATION, 
         "query was not created with change detection enabled");
 
+    FLECS_SCHED_POINT("monitor_alloc_check");
     if (match->_monitor) {
         return false;
     }
 
+    FLECS_SCHED_POINT("monitor_alloc_do");
     int32_t *monitor = flecs_balloc(&cache->allocators.monitors);
     monitor[0] = 0;
 
@@ -484,7 +486,10 @@ void flecs_query_mark_fields_dirty(
 
         ecs_assert(type_index < table->type.count, ECS_INTERNAL_ERROR, NULL);
         int32_t column = table->column_map[type_index];
-        dirty_state[column + 1] ++;
+        FLECS_SCHED_POINT("dirty_state_read");
+        int32_t old_dirty = dirty_state[column + 1];
+        FLECS_SCHED_POINT("dirty_state_write");
+        dirty_state[column + 1] = old_dirty + 1;
     }
 }
 
@@ -523,7 +528,10 @@ void flecs_query_mark_fixed_fields_dirty(
 
         ecs_assert(it->trs[i]->column >= 0, ECS_INTERNAL_ERROR, NULL);
         int32_t column = table->column_map[it->trs[i]->column];
-        dirty_state[column + 1] ++;
+        FLECS_SCHED_POINT("fixed_dirty_state_read");
+        int32_t old_dirty = dirty_state[column + 1];
+        FLECS_SCHED_POINT("fixed_dirty_state_write");
+        dirty_state[column + 1] = old_dirty + 1;
     }
 }
 
@@ -547,12 +555,15 @@ void flecs_query_sync_match_monitor(
         }
     }
 
+    FLECS_SCHED_POINT("sync_monitor_enter");
+
     int32_t *monitor = match->_monitor;
     ecs_table_t *table = match->base.table;
     if (table) {
         int32_t *dirty_state = flecs_table_get_dirty_state(
             cache->query->world, table);
         ecs_assert(dirty_state != NULL, ECS_INTERNAL_ERROR, NULL);
+        FLECS_SCHED_POINT("sync_monitor_write_table");
         monitor[0] = dirty_state[0]; /* Did table gain/lose entities */
     }
 
@@ -571,6 +582,7 @@ void flecs_query_sync_match_monitor(
             /* Query for cache should never point to stage */
             ecs_assert(q->world == q->real_world, ECS_INTERNAL_ERROR, NULL);
 
+            FLECS_SCHED_POINT("sync_monitor_write_field");
             monitor[field + 1] = flecs_table_get_dirty_state(
                 q->world, tc.table)[tc.column + 1];
         }
