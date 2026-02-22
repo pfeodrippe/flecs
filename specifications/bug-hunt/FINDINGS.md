@@ -1,6 +1,6 @@
 # Flecs ECS Concurrency Bug Findings
 
-Bugs found via TLA+ model checking against Flecs v4.1.4.
+Bugs found via TLA+ model checking against the Flecs source (v4).
 
 All specifications are in `specifications/bug-hunt/`. Each models a specific
 concurrency scenario extracted from the Flecs C source, with non-atomic
@@ -10,270 +10,301 @@ read-modify-write operations split into separate steps to expose interleavings.
 
 ## Summary
 
-| # | Bug | Severity | Spec | Source |
-|---|-----|----------|------|--------|
-| 1 | Duplicate entity allocation (entity index race) | **Critical** | `EntityIndexRace.tla` | `entity_index.c:242-265` |
-| 2 | Silent data loss during cross-stage merge | **High** | `MultiStageMerge.tla` | `stage.c` / `commands.c` |
-| 3 | Override removal data race (concurrent write) | **High** | `OverrideWriteRace.tla` | `commands.c:276-312` |
+| # | Bug | Severity | Impact | Spec | Source |
+|---|-----|----------|--------|------|--------|
+| 1 | `ecs_ensure` direct-write race (missing `stage_count` guard) | **High** | Data corruption | `EnsureDirectWrite.tla` | `commands.c:399-459` |
+| 2 | `system_data->time_spent +=` lost update | **Medium** | Incorrect profiling | `TimeSpentRace.tla` | `system.c:146` |
+| 3 | `dirty_state[column+1] ++` lost update | **High** | Missed change detection | `DirtyStateRace.tla` | `change_detection.c:487,526` |
+| 4 | `query->eval_count` inconsistent atomicity | **Low** | Incorrect statistics (UB) | `EvalCountRace.tla` | `eval_iter.c:551`, `api.c:492,522` |
+
+### Previously reported (Phase 2 — invalidated)
+
+The following specs from Phase 2 model scenarios that are either documented
+behavior, user errors, or prevented by the pipeline scheduler under normal use.
+They are kept for reference but are **not real bugs**:
+
+| Spec | Why invalidated |
+|------|-----------------|
+| `EntityIndexRace.tla` | `ecs_new` from worker threads is forbidden by docs |
+| `MultiStageMerge.tla` | Cross-stage delete/add discard is documented behavior |
+| `OverrideWriteRace.tla` | Protected by pipeline scheduler sync points |
 
 ---
 
-## Bug 1: Duplicate Entity Allocation (CRITICAL)
+## Bug 1: `ecs_ensure` Direct-Write Race (HIGH)
 
-**Spec:** `EntityIndexRace.tla`
-**Invariant violated:** `NoDuplicateEntityAllocation`
-**TLC result:** 666 states explored, violation at depth 14, <1s
-
-### Description
-
-Two threads calling `flecs_entity_index_new_id()` concurrently can receive the
-**same entity ID**. The entity index has zero synchronization — `alive_count`
-and `max_id` are plain `int32_t`/`uint64_t` with no atomics or locks.
-
-### Root cause
-
-`flecs_entity_index_new_id` in `entity_index.c:239-270` has two non-atomic
-read-modify-write sequences:
-
-**Recycling path** (line 242-244):
-```c
-if (index->alive_count != ecs_vec_count(&index->dense)) {
-    return ecs_vec_get_t(&index->dense, uint64_t, index->alive_count ++)[0];
-}
-```
-
-**Creation path** (line 248, 265):
-```c
-uint32_t id = (uint32_t)++ index->max_id;
-// ...
-r->dense = index->alive_count ++;
-```
-
-Both `alive_count++` and `++max_id` are non-atomic. When two threads execute
-concurrently:
-
-1. Thread A reads `alive_count` (say, value 2)
-2. Thread B reads `alive_count` (still 2 — A hasn't written yet)
-3. Thread A returns `dense[2]` and writes `alive_count = 3`
-4. Thread B returns `dense[2]` — **same entity** — and writes `alive_count = 3`
-
-Both threads now own the same entity ID. The second `alive_count = 3` write
-is a lost update (should have been 4).
-
-### Stale comment
-
-`entity.c:147-150` contains:
-```c
-/* ... thread safe (uses atomic inc when in threading mode) */
-```
-
-This comment is **false** in the current codebase. There are no atomics anywhere
-in `entity_index.c`. The only guard is a debug-mode assert at `entity.c:153`:
-```c
-ecs_assert(!(unsafe_world->flags & EcsWorldMultiThreaded), ...);
-```
-
-This assert is compiled out in release builds, leaving zero protection.
-
-### Race scenario (from TLC counterexample)
-
-```
-State 1:  Both threads idle, entity index empty
-State 2:  Thread t1 starts new_id, reads alive_count = 0
-State 3:  Thread t2 starts new_id, reads alive_count = 0
-State 4:  t1 sees no recyclable slots, reads max_id = 0
-State 5:  t2 sees no recyclable slots, reads max_id = 0
-State 6:  t1 writes max_id = 1, gets entity ID 1
-State 7:  t2 writes max_id = 1, gets entity ID 1 (LOST UPDATE)
-...
-State 14: Both threads finish — allocated = {(t1, 1), (t2, 1)} — VIOLATION
-```
-
-### Impact
-
-- Two threads own the same entity — components written by one are silently
-  overwritten by the other
-- Dense array corruption: two records point to the same dense index
-- `alive_count` lost update means the partition boundary is wrong, leading to
-  incorrect recycling of live entities in subsequent operations
-
-### Recommendation
-
-Either:
-- Make entity creation truly thread-safe with atomics (as the stale comment
-  claims), or
-- Document that `ecs_new()` must never be called from worker threads and
-  enforce this in release builds (not just debug asserts), or
-- Route all entity creation through the deferred command queue when in
-  multi-threaded mode
-
----
-
-## Bug 2: Silent Data Loss During Cross-Stage Merge (HIGH)
-
-**Spec:** `MultiStageMerge.tla`
-**Invariant violated:** `NoSilentDataLoss` (safety), liveness violation (temporal)
-**TLC result:** Safety: 16,883 states, violation at depth 10, <1s. Liveness: 269,873 states, 7s.
+**Spec:** `EnsureDirectWrite.tla`
+**Invariants violated:** `NoDataRace` (depth 3), `NoConcurrentWrite` (depth 5)
+**TLC result:** 47 states, <1s
 
 ### Description
 
-When multiple worker stages queue commands during readonly mode and merge
-sequentially, a **Delete** command from an earlier stage causes all subsequent
-stages' commands for that entity to be **silently discarded** — no error, no
-warning, no callback.
+When a multi-threaded system calls `ecs_ensure()` on an entity that already has
+the requested component, `flecs_defer_ensure` returns a **raw pointer to the
+live component storage** in the shared world. If two worker threads call
+`ecs_ensure` on the same entity (e.g., a singleton), they both get the same raw
+pointer and write to it concurrently — a data race.
 
 ### Root cause
 
-The merge loop in `stage.c` processes stages in order (stage 0, then stage 1,
-etc.). Each command checks `alive[entity]` before applying. If stage 0 deletes
-entity E, then when stage 1's commands for entity E are processed, the entity
-is already dead and the commands are dropped:
+`flecs_defer_ensure` (`commands.c:399-459`) calls `flecs_defer_get_existing`
+which returns a pointer into the live component table via `flecs_get_mut`. When
+the entity already has the component (`ptr.ptr != NULL`), the pointer is returned
+directly (line 452-454):
 
-```
-// Pseudocode from merge logic:
-if (!alive[cmd.entity]) {
-    // silently skip — no error, no log
-    continue;
-}
-```
-
-This is by design — Flecs treats this as "the entity is gone, so the command
-is moot." But from the perspective of the worker thread that enqueued the
-command, its work is silently lost with no indication.
-
-### Race scenario (from TLC counterexample)
-
-```
-State 1:  Idle, entities e1 and e2 alive
-State 2:  Begin readonly
-State 3:  Stage s0 enqueues Delete(e1)
-State 4:  Stage s1 enqueues Add(e1, c1)    ← s1 sees e1 alive
-State 5:  End readonly, begin merge
-State 6:  Merge stage s0: apply Delete(e1) → e1 is now dead
-State 7:  Merge stage s1: Add(e1, c1) → e1 is dead → DROPPED
-          (dropped counter = 1 → NoSilentDataLoss VIOLATED)
-```
-
-### Liveness violation
-
-The temporal property `InfiniteProgress` (the system always eventually reaches
-idle with all queues cleared) can also be violated. TLC found a lasso-shaped
-counterexample where the system loops through readonly/merge cycles but queues
-are never fully drained due to re-enqueueing.
-
-### Impact
-
-- User work is silently lost — a system that computed and enqueued a result
-  gets no feedback that the result was discarded
-- Hard to debug — no log message, no error code, no callback
-- Non-deterministic from the user's perspective — whether data is lost depends
-  on which stage executes the delete and the merge order
-
-### Recommendation
-
-- Add an optional diagnostic callback or event when commands are dropped
-  during merge due to dead entities
-- Consider logging dropped commands at a debug/trace level
-- Document this behavior explicitly in the multi-threading guide
-
----
-
-## Bug 3: Override Removal Data Race (HIGH)
-
-**Spec:** `OverrideWriteRace.tla`
-**Invariants violated:** `NoSimultaneousWrite` (depth 3), `NoDataRace` (depth 5)
-**TLC result:** 54 states, <1s
-
-### Description
-
-When removing an overridden component during readonly/deferred mode,
-`flecs_defer_remove` **immediately writes** the base component value into the
-entity's table column memory — bypassing the command queue entirely. This is a
-direct write to shared world storage from a worker thread, with no lock.
-
-### Root cause
-
-`commands.c:276-312`:
 ```c
-/* If an override is removed, restore to the component to the value of
- * the overridden component. */
-void *dst = ECS_OFFSET(
-    table->data.columns[tr->column].data,
-    ti->size * ECS_RECORD_TO_ROW(r->row));
-const void *src = ecs_ref_get_id(world, &o->refs[tr->column], id);
-ecs_copy_t copy = ti->hooks.copy;
-if (copy) {
-    copy(dst, src, 1, ti);       // ← DIRECT WRITE, no lock
 } else {
-    ecs_os_memcpy(dst, src, ti->size);  // ← DIRECT WRITE
+    cmd->kind = EcsCmdAdd;
 }
+return ptr.ptr;  // raw pointer to shared world data!
 ```
 
-This code runs during deferred mode (inside a worker thread's system). If
-another thread is iterating the same table column (reading the component), this
-is a **data race** — undefined behavior in C.
+**Compare with `flecs_defer_set`** (`commands.c:461-546`) which has the guard
+at lines 481-486:
 
-### Additional issue: non-atomic table lock
-
-The table "lock" mechanism (`table.c:2695-2717`) uses plain `++`/`--`:
 ```c
-void ecs_table_lock(...) {
-    table->_->lock ++;   // non-atomic increment
+if (world->stage_count != 1) {
+    /* If world has multiple stages we need to insert a set command
+     * with temporary storage, as the value could be lost otherwise
+     * by a command in another stage. */
+    ptr.ptr = NULL;
 }
-void ecs_table_unlock(...) {
-    table->_->lock --;   // non-atomic decrement
-}
 ```
 
-Meanwhile, `entity.c` uses `ecs_os_ainc`/`ecs_os_adec` (atomics) on the same
-field in some paths. This inconsistency means the lock counter itself can be
-corrupted under concurrent access.
+This guard forces `flecs_defer_set` to allocate per-stage temporary storage
+when multi-threaded, preventing the race. **This guard is missing from
+`flecs_defer_ensure`, `flecs_defer_cpp_set`, and `flecs_defer_cpp_assign`.**
 
-### Race scenario (from TLC counterexample)
+### Affected functions (all missing the guard)
 
-**Simultaneous write (depth 3):**
+| Function | File:Line | Description |
+|----------|-----------|-------------|
+| `flecs_defer_ensure` | `commands.c:399` | C API `ecs_ensure()` path |
+| `flecs_defer_cpp_set` | `commands.c:549` | C++ `entity::set()` path |
+| `flecs_defer_cpp_assign` | `commands.c:623` | C++ `entity::insert()` path |
+
+### API documentation confirms the behavior
+
+`flecs.h:3363-3366`:
+> If ensure is called when the world is in deferred/readonly mode, the function
+> will: return a pointer to the existing component if it exists
+
+### TLC counterexample (NoDataRace violation)
+
 ```
-State 1:  Both threads idle, slot = OverrideValue
-State 2:  Thread t1 starts override removal, enters write_begin
-State 3:  Thread t2 starts override removal, enters write_begin
-          → Two threads both writing to same slot — VIOLATION
+State 1: Both workers idle, apiPath = "ensure"
+State 2: Worker 1 calls ecs_ensure → workerPtr[1] = "raw"
+State 3: Worker 2 calls ecs_ensure → workerPtr[2] = "raw"
+         ⇒ Both hold raw pointers to same live component — VIOLATION
 ```
-
-**Read-during-write (depth 5):**
-```
-State 1:  Both threads idle, slot = OverrideValue
-State 2:  Thread t1 starts override removal, enters write_begin
-State 3:  Thread t1 marks slot as being written (slotWriting = TRUE)
-State 4:  Thread t2 starts read, enters reading state
-State 5:  Thread t2 reads slot while t1 is mid-write
-          → readsDuringWrite = TRUE — DATA RACE
-```
-
-### Pipeline scheduler mitigation
-
-The Flecs pipeline scheduler prevents systems that touch the same archetype
-from running in parallel under normal circumstances. However, this protection
-can be bypassed if:
-
-- Two systems in different pipeline stages both remove the same overridden
-  component from the same entity
-- User code manually schedules systems that violate the pipeline's assumptions
-- Custom pipeline implementations don't enforce the archetype exclusion
 
 ### Impact
 
-- Undefined behavior in C (concurrent read + write to same memory)
-- Torn reads: a reader may see partially-written component data
-- Data corruption: two simultaneous override removals can corrupt the
-  component value
+- **Data race**: two workers write to the same memory location concurrently
+- **Undefined behavior** under C11 memory model
+- **Silent data corruption**: last writer wins, no error or warning
+- Affects any multi-threaded system that calls `ecs_ensure` on a non-iterated
+  entity (e.g., a singleton config entity)
 
-### Recommendation
+### Fix
 
-- Defer the override value restoration to the merge phase instead of writing
-  immediately during readonly mode
-- Or, add a per-column lock for the override write path
-- Document that custom pipeline implementations must enforce the archetype
-  exclusion guarantee to avoid this race
+Add the same `stage_count != 1` guard to `flecs_defer_ensure`,
+`flecs_defer_cpp_set`, and `flecs_defer_cpp_assign`:
+
+```c
+if (world->stage_count != 1) {
+    ptr.ptr = NULL;
+}
+```
+
+This forces per-stage temporary storage allocation, matching `flecs_defer_set`.
+
+---
+
+## Bug 2: `system_data->time_spent` Lost Update (MEDIUM)
+
+**Spec:** `TimeSpentRace.tla`
+**Invariant violated:** `NoLostUpdate`
+**TLC result:** 63 states, <1s
+
+### Description
+
+When `EcsWorldMeasureSystemTime` is enabled and a system is marked
+`multi_threaded`, all worker threads execute `system_data->time_spent +=`
+on the **same shared float** without synchronization.
+
+### Root cause
+
+`system.c:146`:
+```c
+if (measure_time) {
+    system_data->time_spent += (ecs_ftime_t)ecs_time_measure(&time_start);
+}
+```
+
+`system_data` is the same `ecs_system_t` struct for all workers running a
+multi-threaded system. The `+=` is a non-atomic read-modify-write on a float.
+
+**Not covered by `FLECS_ACCURATE_COUNTERS`**: that flag only makes integer
+counters (via `ecs_os_linc`) atomic. There is no atomic float add facility
+in Flecs.
+
+### TLC counterexample
+
+```
+State 1:  timeSpent = 0, Workers = {1, 2}
+State 3:  Worker 1 reads timeSpent = 0
+State 5:  Worker 2 reads timeSpent = 0  (stale!)
+State 6:  Worker 1 writes 0 + 1 = 1
+State 8:  Worker 2 writes 0 + 2 = 2     (overwrites Worker 1's contribution)
+State 10: DONE: timeSpent = 2, expected 3 — Worker 1's time LOST
+```
+
+### Impact
+
+- Inaccurate system timing statistics
+- `ecs_system_t::time_spent` reports less time than actually spent
+- Severity increases with more worker threads (more lost updates)
+
+### Fix
+
+Accumulate time per-stage during the parallel phase, then sum into
+`system_data->time_spent` during the single-threaded merge/sync point.
+
+---
+
+## Bug 3: `dirty_state` Change Detection Lost Update (HIGH)
+
+**Spec:** `DirtyStateRace.tla`
+**Invariant violated:** `NoLostDirtyUpdate`, `ChangeDetectionIntegrity`
+**TLC result:** 866 states (3 workers), <1s
+
+### Description
+
+The change detection system tracks which table columns have been modified via
+`dirty_state[column + 1] ++`. When a multi-threaded system has a **fixed-source
+field** (e.g., a singleton), ALL workers increment the same `dirty_state` entry
+when they finish iteration. This is a non-atomic `++` on shared state.
+
+### Root cause
+
+`change_detection.c:526` (in `flecs_query_mark_fixed_fields_dirty`):
+```c
+dirty_state[column + 1] ++;
+```
+
+Called from `eval_iter.c:258` when `ecs_query_next` returns false (iteration
+complete). For fixed-source fields, all workers touch the same table's
+dirty_state because the fixed source is the same entity for all workers.
+
+The same race also affects `flecs_query_mark_fields_dirty`
+(`change_detection.c:487`) when workers process entities from the same table.
+
+### TLC counterexample (3 workers, expected final dirty_state = 3)
+
+```
+State 1:  dirtyState = 0, all workers iterating
+State 4:  Worker 1 finishes, reads dirtyState = 0, writes 1
+State 7:  Worker 2 finishes, reads dirtyState = 1
+State 9:  Worker 3 finishes, reads dirtyState = 1  (stale!)
+State 10: Worker 3 writes 1 + 1 = 2
+State 12: Worker 2 writes 1 + 1 = 2 (overwrites, same value but lost update)
+State 14: DONE: dirtyState = 2, expected 3 — VIOLATION
+```
+
+### Impact
+
+- **Functional bug**: change detection monitor can get out of sync with reality
+- A subsequent `ecs_query_changed()` call may incorrectly return `false`,
+  causing a system to skip processing of actually-modified data
+- Unlike the statistics counter races, this affects correctness, not just
+  profiling
+
+### Fix
+
+Use atomic increments for `dirty_state` updates, or accumulate dirty flags
+per-stage and merge them during the sync point.
+
+---
+
+## Bug 4: `query->eval_count` Inconsistent Atomicity (LOW)
+
+**Spec:** `EvalCountRace.tla`
+**Invariant violated:** `NoLostEvalCount`
+**TLC result:** 632 states, <1s
+
+### Description
+
+`query->eval_count` is incremented from multiple sites with inconsistent
+atomicity guarantees:
+
+| Site | Operation | Atomic with `FLECS_ACCURATE_COUNTERS`? |
+|------|-----------|---------------------------------------|
+| `eval_iter.c:551` | `ecs_os_linc(&q->eval_count)` | Yes (becomes `ecs_os_lainc`) |
+| `api.c:492` | `q->eval_count ++` | **Never** |
+| `api.c:522` | `q->eval_count ++` | **Never** |
+| `observer.c:643` | `o->query->eval_count --` | **Never** |
+
+Even with `FLECS_ACCURATE_COUNTERS` enabled, the `api.c` and `observer.c`
+sites use plain `++`/`--`, defeating the atomicity of the `eval_iter.c` site.
+Mixing atomic and non-atomic operations on the same field is undefined behavior.
+
+The same inconsistency exists for `world->info.queries_ran_total`
+(`eval_iter.c:267,313`) which is only statistics.
+
+### TLC counterexample
+
+Shows Worker 1's `ecs_query_iter` increment and a concurrent
+`ecs_query_has_table` call both reading `evalCount = 0`, leading to
+final `evalCount = 2` instead of expected `3`.
+
+### Impact
+
+- Incorrect profiling/statistics counters
+- Technically undefined behavior under C11 memory model
+- Low practical impact since `eval_count` doesn't affect system behavior
+
+### Fix
+
+Use `ecs_os_linc` (or atomic operations) consistently at all sites that
+modify `eval_count`, not just the `eval_iter.c` site.
+
+---
+
+## Additional Races Found (Not Formally Specified)
+
+These were identified through source code analysis but not given full TLA+
+specs because they follow the same lost-update pattern as the above.
+
+### `world->info.observers_ran_total ++` (observer.c:501)
+
+Plain `int64_t` increment on shared world state. Unlike `systems_ran_total`
+(which uses `ecs_os_linc`), this always uses plain `++`. Safe under the normal
+pipeline (observers fire during single-threaded merge), but inconsistent.
+
+### `world->info.emit_time_total +=` (observable.c:1561)
+
+Non-atomic float accumulation on shared world state. Same category as
+`time_spent`, but only triggered during `ecs_emit` which runs single-threaded
+during merge.
+
+### `cache->prev_match_count` write (cache_iter.c:77)
+
+Multiple workers write the same value to `cache->prev_match_count` during
+`ecs_query_iter`. Benign race (all threads compute the same value), but
+technically undefined behavior.
+
+### `qm->ptrs[]` and `qm->table_version` writes (cache_iter.c:181,201)
+
+Multiple workers update shared cache match pointers during iteration. The code
+acknowledges this with a comment: "This can be done safely from multiple threads
+since all the read data is immutable." Benign in practice but technically UB.
+
+### `world->event_id ++` (observable.c:1260)
+
+Non-atomic increment used for event deduplication. Safe under the normal
+pipeline (events only emitted during single-threaded merge/immediate execution),
+but has no guard against concurrent `ecs_emit` calls.
 
 ---
 
@@ -286,15 +317,22 @@ into TLA+ specifications, modeling non-atomic read-modify-write operations as
 separate Read and Write steps with arbitrary interleaving between threads. This
 is the standard technique for finding concurrency bugs via formal methods.
 
-**Model size:** All specifications use small constants (2 threads, 2-3 entities,
-1 component) with state constraints to keep TLC runs under 10 seconds. The bugs
+**Model size:** All specifications use small constants (2-3 threads, small
+domains) with state constraints to keep TLC runs under 1 second. The bugs
 are found at shallow depths (3-14 steps), confirming they are easily reachable
 race conditions, not exotic corner cases.
 
-**Tool:** TLC model checker via `clojure -Sdeps '{:deps {pfeodrippe/recife
-{:mvn/version "0.22.0"}}}' -M -e '(tlc2.TLC/main ...)'`
+**Tool:** TLC model checker via Clojure/Recife:
+```bash
+clojure -Sdeps '{:deps {pfeodrippe/recife {:mvn/version "0.22.0"}}}' \
+  -M -e '(tlc2.TLC/main (into-array String ["-config" "Spec.cfg" ...]))'
+```
 
 **Files:**
-- `EntityIndexRace.tla` / `.cfg` — Bug 1
-- `MultiStageMerge.tla` / `.cfg` — Bug 2
-- `OverrideWriteRace.tla` / `.cfg` — Bug 3
+- `EnsureDirectWrite.tla` / `.cfg` — Bug 1 (ecs_ensure direct-write race)
+- `TimeSpentRace.tla` / `.cfg` — Bug 2 (time_spent lost update)
+- `DirtyStateRace.tla` / `.cfg` — Bug 3 (dirty_state change detection race)
+- `EvalCountRace.tla` / `.cfg` — Bug 4 (eval_count inconsistent atomicity)
+- `EntityIndexRace.tla` / `.cfg` — Phase 2 (invalidated: user error scenario)
+- `MultiStageMerge.tla` / `.cfg` — Phase 2 (invalidated: documented behavior)
+- `OverrideWriteRace.tla` / `.cfg` — Phase 2 (invalidated: pipeline-protected)
