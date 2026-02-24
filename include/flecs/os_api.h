@@ -21,6 +21,25 @@
  * @{
  */
 
+/* Controlled concurrency testing support.
+ * When FLECS_SCHED_TESTING is defined, SCHED_POINT macros become barriers
+ * that allow deterministic thread interleaving for race condition testing.
+ * In production builds (without FLECS_SCHED_TESTING), these are no-ops. */
+#ifdef FLECS_SCHED_TESTING
+    /* Declaration of external scheduler function (implemented in test framework) */
+    FLECS_API void flecs_sched_point(const char *point);
+    #define FLECS_SCHED_POINT(name) flecs_sched_point(name)
+
+    /* Test accessor functions for validating scheduler-driven race outcomes. */
+    FLECS_API int64_t flecs_query_get_eval_count(const ecs_query_t *query);
+    FLECS_API int32_t flecs_query_cache_get_match_count(const ecs_query_t *query);
+    FLECS_API int32_t flecs_query_cache_get_dirty_state(const ecs_query_t *query, int32_t field);
+    FLECS_API int32_t flecs_query_cache_get_monitor(const ecs_query_t *query, int32_t field);
+    FLECS_API float flecs_system_get_time_spent(const ecs_world_t *world, ecs_entity_t system);
+#else
+    #define FLECS_SCHED_POINT(name) ((void)0)
+#endif
+
 #if defined(ECS_TARGET_WINDOWS)
 #include <malloc.h>
 #elif defined(ECS_TARGET_FREEBSD)

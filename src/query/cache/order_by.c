@@ -304,13 +304,18 @@ void flecs_query_cache_sort_tables(
 
             /* Something has changed, sort the table. Prefers using 
             * flecs_query_cache_sort_table when available */
+            FLECS_SCHED_POINT("sort_table");
             flecs_query_cache_sort_table(world, table, column, compare, sort);
             tables_sorted = true;
         }
     } while ((cur = cur->next)); /* Next group */
 
     if (tables_sorted || cache->match_count != cache->prev_match_count) {
+        FLECS_SCHED_POINT("sort_build_tables");
         flecs_query_cache_build_sorted_tables(cache);
-        cache->match_count ++; /* Increase version if tables changed */
+        FLECS_SCHED_POINT("sort_match_count_read");
+        int32_t mc = cache->match_count;
+        FLECS_SCHED_POINT("sort_match_count_write");
+        cache->match_count = mc + 1; /* Increase version if tables changed */
     }
 }

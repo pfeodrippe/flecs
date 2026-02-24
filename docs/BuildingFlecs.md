@@ -276,7 +276,11 @@ bake run test/meta
 bake run test/script
 bake run test/cpp
 bake run test/collections
+bake run test/concurrency --cfg debug -- -j 1
 ```
+
+The concurrency suite uses scheduler barriers (`FLECS_SCHED_TESTING`) to force
+interleavings that reproduce race outcomes derived from TLA+ bug traces.
 
 To run a single test suite, do:
 

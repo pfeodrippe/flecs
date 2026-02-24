@@ -295,17 +295,20 @@ bool flecs_defer_remove(
                     ecs_assert(tr->column != -1, ECS_INTERNAL_ERROR, NULL);
                     ecs_ref_t *ref = &o->refs[tr->column];
                     if (ref->entity) {
+                        FLECS_SCHED_POINT("override_write_begin");
                         void *dst = ECS_OFFSET(
                             table->data.columns[tr->column].data, 
                             ti->size * ECS_RECORD_TO_ROW(r->row));
                         const void *src = ecs_ref_get_id(
                             world, &o->refs[tr->column], id);
+                        FLECS_SCHED_POINT("override_write_copy");
                         ecs_copy_t copy = ti->hooks.copy;
                         if (copy) {
                             copy(dst, src, 1, ti);
                         } else {
                             ecs_os_memcpy(dst, src, ti->size);
                         }
+                        FLECS_SCHED_POINT("override_write_end");
                     }
                 }
             }
@@ -410,6 +413,7 @@ void* flecs_defer_ensure(
     cmd->id = id;
 
     ecs_record_t *r = flecs_entities_get(world, entity);
+    FLECS_SCHED_POINT("ensure_get_ptr");
     flecs_component_ptr_t ptr = flecs_defer_get_existing(
         world, entity, r, id, size);
 
@@ -450,6 +454,7 @@ void* flecs_defer_ensure(
             }
         }
     } else {
+        FLECS_SCHED_POINT("ensure_has_ptr");
         cmd->kind = EcsCmdAdd;
     }
 
@@ -1172,6 +1177,7 @@ bool flecs_defer_end(
             for (i = 0; i < count; i ++) {
                 ecs_cmd_t *cmd = &cmds[i];
                 ecs_entity_t e = cmd->entity;
+                FLECS_SCHED_POINT("merge_check_alive");
                 bool is_alive = flecs_entities_is_alive(world, e);
 
                 /* A negative index indicates the first command for an entity */
@@ -1202,11 +1208,13 @@ bool flecs_defer_end(
                  * should be ignored. */
                 ecs_cmd_kind_t kind = cmd->kind;
                 if ((kind != EcsCmdPath) && ((kind == EcsCmdSkip) || (e && !is_alive))) {
+                    FLECS_SCHED_POINT("merge_discard_cmd");
                     world->info.cmd.discard_count ++;
                     flecs_discard_cmd(world, cmd);
                     continue;
                 }
 
+                FLECS_SCHED_POINT("merge_apply_cmd");
                 ecs_id_t id = cmd->id;
 
                 switch(kind) {

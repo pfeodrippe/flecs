@@ -645,3 +645,103 @@ const char* ecs_os_strerror(int err) {
     return strerror(err);
 #   endif
 }
+
+#ifdef FLECS_SCHED_TESTING
+/* Weak stub for controlled concurrency testing.
+ * When test framework is linked, it overrides this with actual implementation. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((weak))
+#endif
+void flecs_sched_point(const char *point) {
+    (void)point;
+}
+
+int64_t flecs_query_get_eval_count(const ecs_query_t *query) {
+    if (!query) {
+        return -1;
+    }
+    return query->eval_count;
+}
+
+int32_t flecs_query_cache_get_match_count(const ecs_query_t *query) {
+    if (!query) {
+        return -1;
+    }
+
+    ecs_query_impl_t *impl = flecs_query_impl(query);
+    if (!impl->cache) {
+        return -1;
+    }
+
+    return impl->cache->match_count;
+}
+
+int32_t flecs_query_cache_get_dirty_state(const ecs_query_t *query, int32_t field) {
+    if (!query) {
+        return -1;
+    }
+
+    ecs_query_impl_t *impl = flecs_query_impl(query);
+    if (!impl->cache) {
+        return -1;
+    }
+
+    ecs_query_cache_group_t *group = &impl->cache->default_group;
+    if (!ecs_vec_count(&group->tables)) {
+        return -1;
+    }
+
+    ecs_query_cache_match_t *qm = ecs_vec_get(&group->tables,
+        ECS_SIZEOF(ecs_query_cache_match_t), 0);
+    if (!qm || !qm->base.table || !qm->base.table->dirty_state) {
+        return -1;
+    }
+
+    if (field < 0 || field > qm->base.table->column_count) {
+        return -1;
+    }
+
+    return qm->base.table->dirty_state[field];
+}
+
+int32_t flecs_query_cache_get_monitor(const ecs_query_t *query, int32_t field) {
+    if (!query) {
+        return -1;
+    }
+
+    ecs_query_impl_t *impl = flecs_query_impl(query);
+    if (!impl->cache) {
+        return -1;
+    }
+
+    ecs_query_cache_group_t *group = &impl->cache->default_group;
+    if (!ecs_vec_count(&group->tables)) {
+        return -1;
+    }
+
+    ecs_query_cache_match_t *qm = ecs_vec_get(&group->tables,
+        ECS_SIZEOF(ecs_query_cache_match_t), 0);
+    if (!qm || !qm->_monitor) {
+        return -1;
+    }
+
+    if (field < 0 || field > query->field_count) {
+        return -1;
+    }
+
+    return qm->_monitor[field];
+}
+
+float flecs_system_get_time_spent(const ecs_world_t *world, ecs_entity_t system) {
+    if (!world) {
+        return 0.0f;
+    }
+
+    const ecs_system_t *sys = ecs_system_get(world, system);
+    if (!sys) {
+        return 0.0f;
+    }
+
+    return (float)sys->time_spent;
+}
+#endif
