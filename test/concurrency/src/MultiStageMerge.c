@@ -80,6 +80,7 @@ void MultiStageMerge_silent_data_loss(void) {
     
     /* The add command was silently discarded because entity was deleted
      * by an earlier stage. This is the "bug" (design issue). */
+    /* Bug final state: entity is dead even though Stage 1 enqueued an add. */
     test_assert(!ecs_is_alive(world, e));
     
     ecs_fini(world);
@@ -121,6 +122,7 @@ void MultiStageMerge_merge_order_matters(void) {
     ecs_defer_end(world);
     
     /* Entity should be deleted (Stage 0's delete wins) */
+    /* Bug final state: entity remains dead because later-stage add was discarded. */
     test_assert(!ecs_is_alive(world, e));
     
     ecs_fini(world);

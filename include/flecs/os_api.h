@@ -29,6 +29,13 @@
     /* Declaration of external scheduler function (implemented in test framework) */
     FLECS_API void flecs_sched_point(const char *point);
     #define FLECS_SCHED_POINT(name) flecs_sched_point(name)
+
+    /* Test accessor functions for validating scheduler-driven race outcomes. */
+    FLECS_API int64_t flecs_query_get_eval_count(const ecs_query_t *query);
+    FLECS_API int32_t flecs_query_cache_get_match_count(const ecs_query_t *query);
+    FLECS_API int32_t flecs_query_cache_get_dirty_state(const ecs_query_t *query, int32_t field);
+    FLECS_API int32_t flecs_query_cache_get_monitor(const ecs_query_t *query, int32_t field);
+    FLECS_API float flecs_system_get_time_spent(const ecs_world_t *world, ecs_entity_t system);
 #else
     #define FLECS_SCHED_POINT(name) ((void)0)
 #endif

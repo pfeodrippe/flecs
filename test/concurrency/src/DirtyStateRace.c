@@ -45,11 +45,8 @@ void DirtyStateRace_lost_increment(void) {
     
     ECS_COMPONENT(world, Position);
     
-    /* Create entities */
-    for (int i = 0; i < 100; i++) {
-        ecs_entity_t e = ecs_new(world);
-        ecs_set(world, e, Position, {(float)i, (float)i});
-    }
+    /* Keep one table with one row to make dirty-state effects deterministic. */
+    ecs_set(world, ecs_new(world), Position, {0.0f, 0.0f});
     
     /* Create a cached query with change detection AND write fields.
      * Using [out] ensures write_fields is set, which triggers dirty marking. */
@@ -91,15 +88,13 @@ void DirtyStateRace_lost_increment(void) {
     };
     
     int result = sched_run(&config);
-    
-    /* Verify the trace matches the TLA+ spec interleaving:
-     * T1 reads → T2 reads → T1 writes → T2 writes (overwrites T1's increment) */
-    test_assert(sched_verify_trace(config.schedule, 4));
-    
+
     sched_fini();
     
     /* The test passes if we could reproduce the interleaving. */
     test_assert(result == 0);
+    /* Bug final state: expected 2 (not 3) because one dirty_state increment is lost. */
+    test_int(flecs_query_cache_get_dirty_state(q, 1), 2);
     
     ecs_query_fini(q);
     ecs_fini(world);
@@ -117,10 +112,7 @@ void DirtyStateRace_correct_interleaving(void) {
     
     ECS_COMPONENT(world, Position);
     
-    for (int i = 0; i < 100; i++) {
-        ecs_entity_t e = ecs_new(world);
-        ecs_set(world, e, Position, {(float)i, (float)i});
-    }
+    ecs_set(world, ecs_new(world), Position, {0.0f, 0.0f});
     
     ecs_query_t *q = ecs_query(world, {
         .expr = "[out] Position",
@@ -162,6 +154,8 @@ void DirtyStateRace_correct_interleaving(void) {
     sched_fini();
 
     test_assert(result == 0);
+    /* Control final state: expected 3 because both increments are applied sequentially. */
+    test_int(flecs_query_cache_get_dirty_state(q, 1), 3);
     
     ecs_query_fini(q);
     ecs_fini(world);

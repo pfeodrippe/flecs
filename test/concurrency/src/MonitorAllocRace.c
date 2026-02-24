@@ -14,6 +14,21 @@
  */
 
 #include <concurrency.h>
+#include <string.h>
+
+static int trace_count_point(const char *point) {
+    int len = 0;
+    const sched_trace_entry_t *trace = sched_get_trace(&len);
+    int count = 0;
+
+    for (int i = 0; i < len; i ++) {
+        if (!strcmp(trace[i].point, point)) {
+            count ++;
+        }
+    }
+
+    return count;
+}
 
 /* Shared test state */
 typedef struct {
@@ -79,9 +94,16 @@ void MonitorAllocRace_double_alloc_leak(void) {
     };
     
     int result = sched_run(&config);
-    sched_fini();
-    
+
     test_assert(result == 0);
+    /* Bug final state: both threads passed the NULL-monitor check (should serialize to 1). */
+    test_int(trace_count_point("monitor_alloc_check"), 2);
+    /* Bug final state: two allocations occurred (expected safe path is exactly 1). */
+    test_int(trace_count_point("monitor_alloc_do"), 2);
+    /* Final query state: monitor storage exists after the raced allocations. */
+    test_assert(flecs_query_cache_get_monitor(q, 0) >= 0);
+
+    sched_fini();
     
     ecs_query_fini(q);
     ecs_fini(world);

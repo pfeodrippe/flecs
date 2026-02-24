@@ -27,7 +27,12 @@ typedef struct {
 /* Minimal system callback - just needs to run */
 static void DummySystem(ecs_iter_t *it) {
     (void)it;
-    /* Do nothing - we're testing the time measurement wrapper */
+    /* Ensure non-trivial measurable work per worker invocation. */
+    volatile int sink = 0;
+    for (int i = 0; i < 200000; i++) {
+        sink += i;
+    }
+    (void)sink;
 }
 
 /* Thread function that runs the system as a worker */
@@ -95,13 +100,43 @@ void TimeSpentRace_lost_time_measurement(void) {
     };
     
     int result = sched_run(&config);
-    sched_fini();
-    
-    /* The test passes if we could reproduce the interleaving.
-     * In a real bug scenario, we'd check that time_spent is less than expected,
-     * but since delta values are small and timing-dependent, we just verify
-     * the schedule executed (meaning the race window exists). */
+
+    /* Lost-update run should produce a smaller final aggregate than
+     * a sequential run over the same workload. */
     test_assert(result == 0);
+    float raced_spent = flecs_system_get_time_spent(world, sys);
+    /* Raced run must still record non-zero work before comparison. */
+    test_assert(raced_spent > 0.0f);
+
+    sched_fini();
+
+    ecs_system_t *sys_data = (ecs_system_t*)ecs_system_get(world, sys);
+    test_assert(sys_data != NULL);
+    sys_data->time_spent = 0;
+
+    sched_init();
+    sched_config_t seq_config = {
+        .num_threads = 2,
+        .thread_fn = worker_fn,
+        .thread_data = &td,
+        .timeout_ms = 5000,
+        .schedule_len = 4,
+        .schedule = {
+            SCHED_STEP(1, "time_spent_read"),
+            SCHED_STEP(1, "time_spent_write"),
+            SCHED_STEP(2, "time_spent_read"),
+            SCHED_STEP(2, "time_spent_write"),
+            SCHED_END
+        }
+    };
+
+    int seq_result = sched_run(&seq_config);
+    test_assert(seq_result == 0);
+    float seq_spent = flecs_system_get_time_spent(world, sys);
+    /* Bug final state: raced aggregate is lower because one time update is lost. */
+    test_assert(seq_spent > raced_spent);
+
+    sched_fini();
     
     ecs_fini(world);
 }
@@ -161,10 +196,13 @@ void TimeSpentRace_correct_interleaving(void) {
     };
     
     int result = sched_run(&config);
-    sched_fini();
-    
-    /* With sequential execution, both measurements are correctly recorded */
+
+    /* With sequential execution, both measurements are correctly recorded. */
     test_assert(result == 0);
+    /* Control final state: sequential path records positive accumulated time. */
+    test_assert(flecs_system_get_time_spent(world, sys) > 0.0f);
+
+    sched_fini();
     
     ecs_fini(world);
 }

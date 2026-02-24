@@ -13,6 +13,21 @@
  */
 
 #include <concurrency.h>
+#include <string.h>
+
+static int trace_count_point(const char *point) {
+    int len = 0;
+    const sched_trace_entry_t *trace = sched_get_trace(&len);
+    int count = 0;
+
+    for (int i = 0; i < len; i ++) {
+        if (!strcmp(trace[i].point, point)) {
+            count ++;
+        }
+    }
+
+    return count;
+}
 
 /* Shared test state */
 typedef struct {
@@ -81,7 +96,7 @@ void OrderBySortRace_concurrent_sort(void) {
      * This makes the table dirty (new row added). */
     ecs_entity_t new_e = ecs_new(world);
     ecs_set(world, new_e, Position, {50.0f, 50.0f});
-    
+
     OrderBySortTestData td = { .world = world, .query = q };
     td.stages[1] = ecs_get_stage(world, 0);
     td.stages[2] = ecs_get_stage(world, 1);
@@ -107,9 +122,14 @@ void OrderBySortRace_concurrent_sort(void) {
     };
     
     int result = sched_run(&config);
-    sched_fini();
-    
+
     test_assert(result == 0);
+    /* Bug final state: both workers entered table sort path (should serialize to 1). */
+    test_int(trace_count_point("sort_table"), 2);
+    /* Bug precondition state: both workers read match_count before either write. */
+    test_int(trace_count_point("sort_match_count_read"), 2);
+
+    sched_fini();
     
     ecs_query_fini(q);
     ecs_fini(world);
@@ -147,6 +167,8 @@ void OrderBySortRace_lost_match_count(void) {
     /* Add a new entity to trigger re-sort on next iteration */
     ecs_entity_t new_e = ecs_new(world);
     ecs_set(world, new_e, Position, {50.0f, 50.0f});
+
+    int32_t before_match_count = ecs_query_match_count(q);
     
     OrderBySortTestData td = { .world = world, .query = q };
     td.stages[1] = ecs_get_stage(world, 0);
@@ -175,6 +197,8 @@ void OrderBySortRace_lost_match_count(void) {
     sched_fini();
     
     test_assert(result == 0);
+    /* Bug final state: match_count rises by 1 (not 2) because one increment is lost. */
+    test_int(ecs_query_match_count(q) - before_match_count, 1);
     
     ecs_query_fini(q);
     ecs_fini(world);

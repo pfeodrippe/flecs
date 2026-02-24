@@ -37,9 +37,14 @@ static void worker_fn(int thread_id, void *data) {
      * to the live data without any protection in multi-stage mode. */
     Position *p = ecs_ensure_id(stage, td->entity, td->component_id, sizeof(Position));
     
-    /* Modify the component - concurrent modifications are the bug */
-    p->x += (float)thread_id;
-    p->y += (float)thread_id;
+    /* Split the write into explicit read/write points so the scheduler can
+     * force a deterministic lost-update interleaving. */
+    sched_point("ensure_write_read");
+    float old_x = p->x;
+    float old_y = p->y;
+    sched_point("ensure_write_write");
+    p->x = old_x + (float)thread_id;
+    p->y = old_y + (float)thread_id;
     
     /* End deferring */
     ecs_defer_end(stage);
@@ -77,13 +82,17 @@ void EnsureDirectWriteRace_concurrent_raw_ptrs(void) {
         .thread_fn = worker_fn,
         .thread_data = &td,
         .timeout_ms = 5000,
-        .schedule_len = 4,
+        .schedule_len = 8,
         .schedule = {
             /* Both threads get raw pointers, then both have them simultaneously */
             SCHED_STEP(1, "ensure_get_ptr"),
             SCHED_STEP(2, "ensure_get_ptr"),
             SCHED_STEP(1, "ensure_has_ptr"),
             SCHED_STEP(2, "ensure_has_ptr"),
+            SCHED_STEP(1, "ensure_write_read"),
+            SCHED_STEP(2, "ensure_write_read"),
+            SCHED_STEP(1, "ensure_write_write"),
+            SCHED_STEP(2, "ensure_write_write"),
             SCHED_END
         }
     };
@@ -92,6 +101,12 @@ void EnsureDirectWriteRace_concurrent_raw_ptrs(void) {
     sched_fini();
     
     test_assert(result == 0);
+
+    /* Lost update: expected sequential sum is 3, race leaves 2. */
+    const Position *p = ecs_get(world, e, Position);
+    test_assert(p != NULL);
+    test_int((int)p->x, 2);
+    test_int((int)p->y, 2);
     
     ecs_fini(world);
 }
@@ -126,13 +141,17 @@ void EnsureDirectWriteRace_sequential_writes(void) {
         .thread_fn = worker_fn,
         .thread_data = &td,
         .timeout_ms = 5000,
-        .schedule_len = 4,
+        .schedule_len = 8,
         .schedule = {
             /* Sequential: T1 completes before T2 starts */
             SCHED_STEP(1, "ensure_get_ptr"),
             SCHED_STEP(1, "ensure_has_ptr"),
+            SCHED_STEP(1, "ensure_write_read"),
+            SCHED_STEP(1, "ensure_write_write"),
             SCHED_STEP(2, "ensure_get_ptr"),
             SCHED_STEP(2, "ensure_has_ptr"),
+            SCHED_STEP(2, "ensure_write_read"),
+            SCHED_STEP(2, "ensure_write_write"),
             SCHED_END
         }
     };
@@ -141,6 +160,12 @@ void EnsureDirectWriteRace_sequential_writes(void) {
     sched_fini();
     
     test_assert(result == 0);
+
+    /* In sequential order both increments are preserved. */
+    const Position *p = ecs_get(world, e, Position);
+    test_assert(p != NULL);
+    test_int((int)p->x, 3);
+    test_int((int)p->y, 3);
     
     ecs_fini(world);
 }

@@ -14,3 +14,4 @@ out
 docs/html
 MODULE.bazel.lock
 states
+*TTrace*

@@ -16,6 +16,34 @@
  */
 
 #include <concurrency.h>
+#include <string.h>
+
+static int trace_count_point(const char *point) {
+    int len = 0;
+    const sched_trace_entry_t *trace = sched_get_trace(&len);
+    int count = 0;
+
+    for (int i = 0; i < len; i ++) {
+        if (!strcmp(trace[i].point, point)) {
+            count ++;
+        }
+    }
+
+    return count;
+}
+
+static int trace_first_index(const char *point) {
+    int len = 0;
+    const sched_trace_entry_t *trace = sched_get_trace(&len);
+
+    for (int i = 0; i < len; i ++) {
+        if (!strcmp(trace[i].point, point)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
 
 /* Shared test state */
 typedef struct {
@@ -24,6 +52,8 @@ typedef struct {
     ecs_entity_t base;      /* Prefab/base entity */
     ecs_entity_t instance;  /* Entity with override */
     ecs_id_t component_id;
+    volatile bool write_in_progress;
+    volatile bool read_during_write;
 } OverrideTestData;
 
 /* Thread function that removes override (triggers immediate write) */
@@ -33,9 +63,11 @@ static void worker_remove_fn(int thread_id, void *data) {
     
     /* Begin deferring - required to enter the deferred remove path */
     ecs_defer_begin(stage);
+    td->write_in_progress = true;
     
     /* Removing the override triggers immediate copy from base to instance */
     ecs_remove_id(stage, td->instance, td->component_id);
+    td->write_in_progress = false;
     
     /* End deferring */
     ecs_defer_end(stage);
@@ -46,6 +78,9 @@ static void worker_read_fn(int thread_id, void *data) {
     OverrideTestData *td = (OverrideTestData *)data;
     (void)thread_id;
     
+    sched_point("override_read_begin");
+    td->read_during_write = td->write_in_progress;
+
     /* Read the component - may see torn data if another thread is writing */
     const Position *p = ecs_get_id(td->world, td->instance, td->component_id);
     if (p) {
@@ -54,6 +89,8 @@ static void worker_read_fn(int thread_id, void *data) {
         volatile float y = p->y;
         (void)x; (void)y;
     }
+
+    sched_point("override_read_end");
 }
 
 /**
@@ -107,9 +144,14 @@ void OverrideWriteRace_concurrent_override_remove(void) {
     };
     
     int result = sched_run(&config);
-    sched_fini();
-    
+
     test_assert(result == 0);
+    /* Bug final state: both workers executed immediate override copy writes. */
+    test_int(trace_count_point("override_write_copy"), 2);
+    /* Final entity state: override is removed so value comes from base relation. */
+    test_assert(!ecs_owns_id(world, instance, td.component_id));
+
+    sched_fini();
     
     ecs_fini(world);
 }
@@ -146,24 +188,36 @@ void OverrideWriteRace_read_during_write(void) {
     /* Use different worker functions - T1 removes, T2 reads */
     sched_config_t config = {
         .num_threads = 2,
-        .thread_fn = worker_remove_fn,  /* Both use remove for simplicity */
+        .thread_fns = {NULL, worker_remove_fn, worker_read_fn},
         .thread_data = &td,
         .timeout_ms = 5000,
-        .schedule_len = 4,
+        .schedule_len = 5,
         .schedule = {
-            /* T1 starts write, T2 reads mid-write (data race) */
+            /* T1 starts write, T2 reads while T1 is in the write window. */
             SCHED_STEP(1, "override_write_begin"),
+            SCHED_STEP(2, "override_read_begin"),
             SCHED_STEP(1, "override_write_copy"),
-            SCHED_STEP(2, "override_write_begin"),
+            SCHED_STEP(2, "override_read_end"),
             SCHED_STEP(1, "override_write_end"),
             SCHED_END
         }
     };
     
     int result = sched_run(&config);
-    sched_fini();
-    
+
     test_assert(result == 0);
+    int write_begin = trace_first_index("override_write_begin");
+    int read_begin = trace_first_index("override_read_begin");
+    int write_end = trace_first_index("override_write_end");
+    test_assert(write_begin != -1);
+    test_assert(read_begin != -1);
+    test_assert(write_end != -1);
+    /* Bug final state: reader observed itself inside the writer's critical window. */
+    test_assert(td.read_during_write);
+    /* Final entity state: override ownership is removed after writer finishes. */
+    test_assert(!ecs_owns_id(world, instance, td.component_id));
+
+    sched_fini();
     
     ecs_fini(world);
 }

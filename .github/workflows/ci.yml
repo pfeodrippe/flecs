@@ -698,6 +698,9 @@ jobs:
       - name: test collections
         run: bake run test/collections -- -j 8
 
+      - name: test concurrency
+        run: bake run test/concurrency --cfg debug -- -j 1
+
   test-cpp-unix:
     needs: [build-linux]
     runs-on: ${{ matrix.target.os }}
@@ -925,6 +928,9 @@ jobs:
 
       - name: test collections
         run: bake/bake run test/collections -- -j 8
+
+      - name: test concurrency
+        run: bake/bake run test/concurrency --cfg debug -- -j 1
 
       - name: test c++
         run: bake/bake run test/cpp -- -j 8

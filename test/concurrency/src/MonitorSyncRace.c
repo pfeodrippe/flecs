@@ -16,6 +16,49 @@
  */
 
 #include <concurrency.h>
+#include <string.h>
+
+static int trace_count_point(const char *point) {
+    int len = 0;
+    const sched_trace_entry_t *trace = sched_get_trace(&len);
+    int count = 0;
+
+    for (int i = 0; i < len; i ++) {
+        if (!strcmp(trace[i].point, point)) {
+            count ++;
+        }
+    }
+
+    return count;
+}
+
+static int trace_first_index(const char *point) {
+    int len = 0;
+    const sched_trace_entry_t *trace = sched_get_trace(&len);
+
+    for (int i = 0; i < len; i ++) {
+        if (!strcmp(trace[i].point, point)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static int trace_count_before(const char *point, int before_index) {
+    int len = 0;
+    const sched_trace_entry_t *trace = sched_get_trace(&len);
+    int end = before_index < 0 ? len : before_index;
+    int count = 0;
+
+    for (int i = 0; i < end; i ++) {
+        if (!strcmp(trace[i].point, point)) {
+            count ++;
+        }
+    }
+
+    return count;
+}
 
 /* Shared test state */
 typedef struct {
@@ -114,11 +157,21 @@ void MonitorSyncRace_concurrent_writes(void) {
     };
     
     int result = sched_run(&config);
-    sched_fini();
-    
+
     /* The test passes if we could reproduce the interleaving.
      * This demonstrates the race window exists in the real code. */
     test_assert(result == 0);
+
+    int first_write = trace_first_index("sync_monitor_write_table");
+    test_assert(first_write != -1);
+    /* Bug final state: two writes hit the same monitor sync path. */
+    test_int(trace_count_point("sync_monitor_write_table"), 2);
+    /* Bug window proof: both workers entered sync before the first write. */
+    test_int(trace_count_before("sync_monitor_enter", first_write), 2);
+    /* Final query state: monitor slot remains initialized after the raced writes. */
+    test_assert(flecs_query_cache_get_monitor(q, 0) >= 0);
+
+    sched_fini();
     
     ecs_query_fini(q);
     ecs_fini(world);
@@ -191,9 +244,19 @@ void MonitorSyncRace_stale_monitor_value(void) {
     };
     
     int result = sched_run(&config);
-    sched_fini();
-    
+
     test_assert(result == 0);
+
+    int first_write = trace_first_index("sync_monitor_write_table");
+    test_assert(first_write != -1);
+    /* Final state: both monitor-sync writes executed in the sequential control path. */
+    test_int(trace_count_point("sync_monitor_write_table"), 2);
+    /* Final state: monitor value is present for field 0 after sync. */
+    test_assert(flecs_query_cache_get_monitor(q, 0) >= 0);
+    /* Final state: dirty-state entry is present for field 0 after sync. */
+    test_assert(flecs_query_cache_get_dirty_state(q, 0) >= 0);
+
+    sched_fini();
     
     ecs_query_fini(q);
     ecs_fini(world);

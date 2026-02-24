@@ -49,6 +49,8 @@ static void worker_new_fn(int thread_id, void *data) {
  * potentially causing duplicate entity ID allocation.
  */
 void EntityIndexRace_duplicate_entity_allocation(void) {
+    test_expect_abort();
+
     ecs_world_t *world = ecs_init();
     
     /* Pre-create some entities so there's recycling potential */
@@ -66,13 +68,15 @@ void EntityIndexRace_duplicate_entity_allocation(void) {
         .thread_fn = worker_new_fn,
         .thread_data = &td,
         .timeout_ms = 5000,
-        .schedule_len = 4,
+        .schedule_len = 6,
         .schedule = {
-            /* Recycling race: both check, both read alive_count, both write */
+            /* Recycling race: both check/read the same slot before either writes. */
             SCHED_STEP(1, "entity_index_check_recycle"),
             SCHED_STEP(2, "entity_index_check_recycle"),
             SCHED_STEP(1, "entity_index_recycle_read"),
             SCHED_STEP(2, "entity_index_recycle_read"),
+            SCHED_STEP(1, "entity_index_recycle_write"),
+            SCHED_STEP(2, "entity_index_recycle_write"),
             SCHED_END
         }
     };
@@ -80,7 +84,12 @@ void EntityIndexRace_duplicate_entity_allocation(void) {
     int result = sched_run(&config);
     sched_fini();
     
-    test_assert(result == 0);
+    if (result == 0) {
+        /* Bug final state: both threads returned the same entity id. */
+        test_assert(td.created[1] != 0);
+        test_assert(td.created[2] != 0);
+        test_assert(td.created[1] == td.created[2]);
+    }
     
     ecs_fini(world);
 }
@@ -130,14 +139,14 @@ void EntityIndexRace_max_id_race(void) {
     int result = sched_run(&config);
     sched_fini();
     
-    /* If we get here without crashing, check for duplicate entity IDs */
-    if (result == 0 && td.created[1] != 0 && td.created[2] != 0) {
-        if (td.created[1] == td.created[2]) {
-            /* Race condition detected - same entity ID allocated twice! */
-            test_assert(false && "Duplicate entity ID allocated - race detected!");
-        }
+    /* If no abort happened, still require bug outcome (duplicate id). */
+    if (result == 0) {
+        /* Bug final state: both threads returned the same entity id. */
+        test_assert(td.created[1] != 0);
+        test_assert(td.created[2] != 0);
+        test_assert(td.created[1] == td.created[2]);
     }
     
-    /* Test passes if scheduler couldn't force the interleaving */
+    /* On non-abort path we already validated duplicate allocation. */
     ecs_fini(world);
 }
